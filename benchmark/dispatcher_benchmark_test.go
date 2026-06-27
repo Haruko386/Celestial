@@ -2,6 +2,7 @@ package benchmark
 
 import (
 	"context"
+	"math"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -38,8 +39,10 @@ func BenchmarkSequential(b *testing.B) {
 				sum += work.fn(i)
 			}
 
+			b.StopTimer()
 			atomic.AddUint64(&sink, sum)
 			reportTasksPerSecond(b, b.N)
+			recordThroughput(b, work.name, 1, 0, b.N)
 		})
 	}
 }
@@ -59,8 +62,10 @@ func BenchmarkChannelDispatcher(b *testing.B) {
 
 			sum := runChannelDispatcher(context.Background(), workers, tasks, work.fn)
 
+			b.StopTimer()
 			atomic.AddUint64(&sink, sum)
 			reportTasksPerSecond(b, len(tasks))
+			recordThroughput(b, work.name, workers, 0, len(tasks))
 		})
 	}
 }
@@ -80,8 +85,10 @@ func BenchmarkAtomicSliceDispatcher(b *testing.B) {
 
 			sum := runAtomicSliceDispatcher(context.Background(), workers, tasks, work.fn)
 
+			b.StopTimer()
 			atomic.AddUint64(&sink, sum)
 			reportTasksPerSecond(b, len(tasks))
+			recordThroughput(b, work.name, workers, 0, len(tasks))
 		})
 	}
 }
@@ -103,8 +110,10 @@ func BenchmarkBatchDispatcher(b *testing.B) {
 
 			sum := runBatchDispatcher(context.Background(), workers, batches, work.fn)
 
+			b.StopTimer()
 			atomic.AddUint64(&sink, sum)
 			reportTasksPerSecond(b, len(tasks))
+			recordThroughput(b, work.name, workers, defaultBatchSize, len(tasks))
 		})
 	}
 }
@@ -131,6 +140,7 @@ func BenchmarkEvaluationScore(b *testing.B) {
 			b.ResetTimer()
 
 			var speedupTotal float64
+			var speedupSamples int
 			for i := 0; i < b.N; i++ {
 				sequentialDuration, sequentialSum := measure(func() uint64 {
 					return runSequential(tasks, cpuWork)
@@ -140,12 +150,22 @@ func BenchmarkEvaluationScore(b *testing.B) {
 				})
 
 				atomic.AddUint64(&sink, sequentialSum+dispatcherSum)
-				speedupTotal += float64(sequentialDuration) / float64(dispatcherDuration)
+				if dispatcherDuration > 0 {
+					speedupTotal += float64(sequentialDuration) / float64(dispatcherDuration)
+					speedupSamples++
+				}
 			}
 
-			speedup := speedupTotal / float64(b.N)
-			b.ReportMetric(speedup, "speedup")
-			b.ReportMetric(speedup/float64(workers), "efficiency")
+			b.StopTimer()
+			speedup := math.NaN()
+			efficiency := math.NaN()
+			if speedupSamples > 0 {
+				speedup = speedupTotal / float64(speedupSamples)
+				efficiency = speedup / float64(workers)
+				b.ReportMetric(speedup, "speedup")
+				b.ReportMetric(efficiency, "efficiency")
+			}
+			recordScore(b, "CPUWork", workers, 0, scoreTaskCount, speedup, efficiency)
 		})
 	}
 
@@ -163,6 +183,7 @@ func BenchmarkEvaluationScore(b *testing.B) {
 		b.ResetTimer()
 
 		var speedupTotal float64
+		var speedupSamples int
 		for i := 0; i < b.N; i++ {
 			sequentialDuration, sequentialSum := measure(func() uint64 {
 				return runSequential(tasks, cpuWork)
@@ -172,12 +193,22 @@ func BenchmarkEvaluationScore(b *testing.B) {
 			})
 
 			atomic.AddUint64(&sink, sequentialSum+dispatcherSum)
-			speedupTotal += float64(sequentialDuration) / float64(dispatcherDuration)
+			if dispatcherDuration > 0 {
+				speedupTotal += float64(sequentialDuration) / float64(dispatcherDuration)
+				speedupSamples++
+			}
 		}
 
-		speedup := speedupTotal / float64(b.N)
-		b.ReportMetric(speedup, "speedup")
-		b.ReportMetric(speedup/float64(workers), "efficiency")
+		b.StopTimer()
+		speedup := math.NaN()
+		efficiency := math.NaN()
+		if speedupSamples > 0 {
+			speedup = speedupTotal / float64(speedupSamples)
+			efficiency = speedup / float64(workers)
+			b.ReportMetric(speedup, "speedup")
+			b.ReportMetric(efficiency, "efficiency")
+		}
+		recordScore(b, "CPUWork", workers, defaultBatchSize, scoreTaskCount, speedup, efficiency)
 	})
 }
 
