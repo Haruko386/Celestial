@@ -44,6 +44,8 @@ dispatcher := celestial.New[Task, Value](celestial.Config{
 - `run.Stop()` cancels the run.
 - `run.Err()` returns the first run error.
 
+Use `RunSlice` for in-memory tasks. It uses an atomic index fast path and avoids the channel producer step. Use `Run` when tasks are produced over time.
+
 ## Function Executor
 
 ```go
@@ -121,6 +123,27 @@ go func() {
 run := dispatcher.Run(context.Background(), tasks, handler)
 ```
 
+## Batching
+
+Batch small tasks to reduce scheduling overhead.
+
+```go
+batches, err := celestial.BatchSlice(files, 64)
+if err != nil {
+	panic(err)
+}
+
+dispatcher := celestial.New[[]string, int](celestial.Config{Workers: 8})
+run := dispatcher.RunSlice(context.Background(), batches, func(ctx context.Context, worker celestial.Worker, batch []string) (int, error) {
+	processed := 0
+	for _, file := range batch {
+		_ = file
+		processed++
+	}
+	return processed, nil
+})
+```
+
 ## Range Helper
 
 `Range` is only a helper for numeric workloads. You can ignore it if your tasks are not ranges.
@@ -196,3 +219,11 @@ type Config struct {
 - `Workers`: number of concurrent workers. Default: `DefaultWorkerCount()`.
 - `QueueSize`: task queue size. Default: `Workers * 2`.
 - `StopOnError`: cancel the run after the first task error.
+
+## Performance Notes
+
+- Prefer `RunSlice` for fixed task lists.
+- Prefer `Run` for streaming producers.
+- Use `BatchSlice` if each task is extremely small.
+- Always consume `run.Results()` unless the run is cancelled.
+- Make handlers respect `ctx.Done()` for fast cancellation.

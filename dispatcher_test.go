@@ -56,6 +56,28 @@ func TestDispatcherRunSliceWithExecutor(t *testing.T) {
 	}
 }
 
+func TestDispatcherRunSliceTaskIDsMatchSliceOrder(t *testing.T) {
+	dispatcher := New[string, string](Config{Workers: 2})
+	tasks := []string{"a", "b", "c"}
+	run := dispatcher.RunSlice(context.Background(), tasks, func(ctx context.Context, worker Worker, task string) (string, error) {
+		return task, nil
+	})
+
+	seen := make(map[int64]string)
+	for result := range run.Results() {
+		seen[result.TaskID] = result.Value
+	}
+	if err := run.Err(); err != nil {
+		t.Fatalf("unexpected run error: %v", err)
+	}
+	for i, task := range tasks {
+		id := int64(i + 1)
+		if seen[id] != task {
+			t.Fatalf("task id %d = %q, want %q", id, seen[id], task)
+		}
+	}
+}
+
 func TestDispatcherStopOnError(t *testing.T) {
 	wantErr := errors.New("boom")
 	dispatcher := New[int, int](Config{Workers: 1, StopOnError: true})
@@ -70,6 +92,23 @@ func TestDispatcherStopOnError(t *testing.T) {
 	}
 	if !errors.Is(run.Err(), wantErr) {
 		t.Fatalf("run.Err() = %v, want %v", run.Err(), wantErr)
+	}
+}
+
+func TestDispatcherStopCancelsRunSlice(t *testing.T) {
+	dispatcher := New[int, int](Config{Workers: 4})
+	tasks := make([]int, 1000)
+	run := dispatcher.RunSlice(context.Background(), tasks, func(ctx context.Context, worker Worker, task int) (int, error) {
+		<-ctx.Done()
+		return 0, ctx.Err()
+	})
+
+	run.Stop()
+
+	select {
+	case <-run.Done():
+	case <-time.After(time.Second):
+		t.Fatal("slice run did not stop")
 	}
 }
 
@@ -110,5 +149,18 @@ func TestSplitRange(t *testing.T) {
 		if ranges[i] != want[i] {
 			t.Fatalf("ranges[%d] = %+v, want %+v", i, ranges[i], want[i])
 		}
+	}
+}
+
+func TestBatchSlice(t *testing.T) {
+	batches, err := BatchSlice([]int{1, 2, 3, 4, 5}, 2)
+	if err != nil {
+		t.Fatalf("BatchSlice returned error: %v", err)
+	}
+	if len(batches) != 3 {
+		t.Fatalf("len(batches) = %d, want 3", len(batches))
+	}
+	if len(batches[0]) != 2 || len(batches[1]) != 2 || len(batches[2]) != 1 {
+		t.Fatalf("unexpected batch sizes: %d, %d, %d", len(batches[0]), len(batches[1]), len(batches[2]))
 	}
 }

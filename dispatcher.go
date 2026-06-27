@@ -143,18 +143,56 @@ func (d *Dispatcher[Task, Value]) RunSliceWith(ctx context.Context, tasks []Task
 		return failedRun[Value](errors.New("celestial: nil executor"))
 	}
 
-	input := make(chan Task)
+	ctx, cancel := context.WithCancel(ctx)
+	results := make(chan Result[Value], d.config.QueueSize)
+	done := make(chan struct{})
+	run := &Run[Value]{
+		results: results,
+		done:    done,
+		cancel:  cancel,
+	}
+
 	go func() {
-		defer close(input)
-		for _, task := range tasks {
-			select {
-			case input <- task:
-			case <-ctx.Done():
-				return
-			}
+		defer close(done)
+		defer close(results)
+
+		var next atomic.Int64
+		var wg sync.WaitGroup
+
+		wg.Add(d.config.Workers)
+		for i := 0; i < d.config.Workers; i++ {
+			go func(index int) {
+				defer wg.Done()
+				worker := Worker{Index: index}
+				for {
+					if ctx.Err() != nil {
+						return
+					}
+
+					taskIndex := int(next.Add(1)) - 1
+					if taskIndex >= len(tasks) {
+						return
+					}
+
+					run.submitted.Add(1)
+					job := queuedTask[Task]{
+						id:    int64(taskIndex + 1),
+						value: tasks[taskIndex],
+					}
+					if !d.execute(ctx, cancel, worker, job, results, executor, run) {
+						return
+					}
+				}
+			}(i)
+		}
+
+		wg.Wait()
+		if err := ctx.Err(); err != nil && !errors.Is(err, context.Canceled) {
+			run.setErr(err)
 		}
 	}()
-	return d.RunWith(ctx, input, executor)
+
+	return run
 }
 
 func (d *Dispatcher[Task, Value]) work(
@@ -170,33 +208,47 @@ func (d *Dispatcher[Task, Value]) work(
 		if ctx.Err() != nil {
 			return
 		}
-
-		started := time.Now()
-		value, err := executor.Execute(ctx, worker, job.value)
-		finished := time.Now()
-		if err != nil {
-			run.setErr(err)
-			if d.config.StopOnError {
-				cancel()
-			}
-		}
-
-		result := Result[Value]{
-			TaskID:      job.id,
-			WorkerIndex: worker.Index,
-			Value:       value,
-			Err:         err,
-			StartedAt:   started,
-			FinishedAt:  finished,
-			Duration:    finished.Sub(started),
-		}
-
-		select {
-		case results <- result:
-			run.completed.Add(1)
-		case <-ctx.Done():
+		if !d.execute(ctx, cancel, worker, job, results, executor, run) {
 			return
 		}
+	}
+}
+
+func (d *Dispatcher[Task, Value]) execute(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	worker Worker,
+	job queuedTask[Task],
+	results chan<- Result[Value],
+	executor Executor[Task, Value],
+	run *Run[Value],
+) bool {
+	started := time.Now()
+	value, err := executor.Execute(ctx, worker, job.value)
+	finished := time.Now()
+	if err != nil {
+		run.setErr(err)
+		if d.config.StopOnError {
+			cancel()
+		}
+	}
+
+	result := Result[Value]{
+		TaskID:      job.id,
+		WorkerIndex: worker.Index,
+		Value:       value,
+		Err:         err,
+		StartedAt:   started,
+		FinishedAt:  finished,
+		Duration:    finished.Sub(started),
+	}
+
+	select {
+	case results <- result:
+		run.completed.Add(1)
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }
 
