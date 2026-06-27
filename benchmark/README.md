@@ -10,8 +10,6 @@ It is designed to answer three questions:
 
 ## Run
 
-From `StardewSeedSearcher/`:
-
 ```bash
 go test ./benchmark -bench . -benchmem -count 5
 ```
@@ -55,13 +53,25 @@ Go reports:
 - `B/op`: allocated bytes per task.
 - `allocs/op`: allocations per task.
 
-The suite also reports:
+The suite also reports custom Go benchmark metrics:
 
 - `tasks/s`: completed tasks per second.
 - `workers`: worker count used by the dispatcher.
 - `batch_size`: batch size for batch benchmarks.
 - `speedup`: sequential duration divided by dispatcher duration.
 - `efficiency`: speedup divided by worker count.
+
+After benchmarks finish, the CLI prints a `Celestial benchmark summary` table with:
+
+- benchmark name
+- workload
+- worker count
+- batch size
+- task count
+- ns/task
+- tasks/s
+- speedup
+- efficiency
 
 ## Evaluation
 
