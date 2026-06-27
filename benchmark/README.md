@@ -1,0 +1,86 @@
+# Dispatcher Benchmark
+
+This folder contains a small benchmark suite for evaluating task dispatch performance.
+
+It is designed to answer three questions:
+
+- How much overhead does the dispatcher add per task?
+- How much throughput does it reach with different worker counts?
+- How efficient is the worker scaling compared with a sequential baseline?
+
+## Run
+
+From `StardewSeedSearcher/`:
+
+```bash
+go test ./benchmark -bench . -benchmem -count 5
+```
+
+Run with specific CPU limits:
+
+```bash
+go test ./benchmark -bench . -benchmem -count 5 -cpu 1,2,4,8
+```
+
+Run one workload:
+
+```bash
+go test ./benchmark -bench BenchmarkChannelDispatcher/CPUWork -benchmem -count 5
+```
+
+Run the score benchmark:
+
+```bash
+go test ./benchmark -bench BenchmarkEvaluationScore -benchmem -count 5
+```
+
+## Benchmarks
+
+- `BenchmarkSequential`: single-thread baseline.
+- `BenchmarkChannelDispatcher`: channel-based worker-pool dispatch.
+- `BenchmarkAtomicSliceDispatcher`: atomic index dispatch for in-memory slices.
+- `BenchmarkBatchDispatcher`: batch dispatch for very small tasks.
+- `BenchmarkEvaluationScore`: direct speedup and efficiency score.
+
+## Workloads
+
+- `TinyWork`: almost no work. It mostly measures dispatch overhead.
+- `CPUWork`: deterministic CPU work. It measures scaling under real computation.
+
+## Metrics
+
+Go reports:
+
+- `ns/op`: average time per task.
+- `B/op`: allocated bytes per task.
+- `allocs/op`: allocations per task.
+
+The suite also reports:
+
+- `tasks/s`: completed tasks per second.
+- `workers`: worker count used by the dispatcher.
+- `batch_size`: batch size for batch benchmarks.
+- `speedup`: sequential duration divided by dispatcher duration.
+- `efficiency`: speedup divided by worker count.
+
+## Evaluation
+
+Use these formulas when comparing results:
+
+```text
+speedup = sequential ns/op / dispatcher ns/op
+efficiency = speedup / workers
+```
+
+`BenchmarkEvaluationScore` reports these values directly.
+
+Suggested interpretation:
+
+- Tiny tasks should have low `ns/op` and low allocations.
+- CPU tasks should show higher `tasks/s` as workers increase.
+- Efficiency close to `1.0` means worker scaling is strong.
+- Low efficiency on tiny tasks usually means dispatch overhead dominates.
+
+## Notes
+
+Benchmark results depend on CPU model, power settings, background load, and Go version. Use `-count 5` or higher and compare medians, not a single run.
