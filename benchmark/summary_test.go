@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"runtime"
 	"sort"
 	"sync"
 	"testing"
@@ -14,18 +15,43 @@ import (
 type summaryRow struct {
 	name        string
 	workload    string
+	goProcs     int
 	workers     int
 	batchSize   int
 	tasks       int
+	iterations  int
 	nsPerTask   float64
 	tasksPerSec float64
 	speedup     float64
 	efficiency  float64
+	samples     int
+}
+
+type summaryAggregate struct {
+	name      string
+	workload  string
+	goProcs   int
+	workers   int
+	batchSize int
+
+	samples int
+	tasks   metricAggregate
+
+	iterations  metricAggregate
+	nsPerTask   metricAggregate
+	tasksPerSec metricAggregate
+	speedup     metricAggregate
+	efficiency  metricAggregate
+}
+
+type metricAggregate struct {
+	sum   float64
+	count int
 }
 
 var (
 	summaryMu   sync.Mutex
-	summaryRows = make(map[string]summaryRow)
+	summaryRows []summaryRow
 )
 
 func TestMain(m *testing.M) {
@@ -43,9 +69,11 @@ func recordThroughput(b *testing.B, workload string, workers int, batchSize int,
 	recordSummary(summaryRow{
 		name:        b.Name(),
 		workload:    workload,
+		goProcs:     runtime.GOMAXPROCS(0),
 		workers:     workers,
 		batchSize:   batchSize,
 		tasks:       tasks,
+		iterations:  b.N,
 		nsPerTask:   nsPerTask(elapsed, tasks),
 		tasksPerSec: float64(tasks) / elapsed.Seconds(),
 		speedup:     math.NaN(),
@@ -57,9 +85,11 @@ func recordScore(b *testing.B, workload string, workers int, batchSize int, task
 	recordSummary(summaryRow{
 		name:        b.Name(),
 		workload:    workload,
+		goProcs:     runtime.GOMAXPROCS(0),
 		workers:     workers,
 		batchSize:   batchSize,
 		tasks:       tasks,
+		iterations:  b.N,
 		nsPerTask:   math.NaN(),
 		tasksPerSec: math.NaN(),
 		speedup:     speedup,
@@ -70,21 +100,19 @@ func recordScore(b *testing.B, workload string, workers int, batchSize int, task
 func recordSummary(row summaryRow) {
 	summaryMu.Lock()
 	defer summaryMu.Unlock()
-	summaryRows[row.name] = row
+	summaryRows = append(summaryRows, row)
 }
 
 func printBenchmarkSummary() {
 	summaryMu.Lock()
-	rows := make([]summaryRow, 0, len(summaryRows))
-	for _, row := range summaryRows {
-		rows = append(rows, row)
-	}
+	records := append([]summaryRow(nil), summaryRows...)
 	summaryMu.Unlock()
 
-	if len(rows) == 0 {
+	if len(records) == 0 {
 		return
 	}
 
+	rows := averageSummaryRows(records)
 	sort.Slice(rows, func(i int, j int) bool {
 		return rows[i].name < rows[j].name
 	})
@@ -93,16 +121,18 @@ func printBenchmarkSummary() {
 	fmt.Fprintln(os.Stdout, "Celestial benchmark summary")
 
 	writer := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(writer, "Benchmark\tWorkload\tWorkers\tBatch\tTasks\tNs/task\tTasks/s\tSpeedup\tEfficiency")
+	fmt.Fprintln(writer, "Benchmark\tWorkload\tGoProcs\tWorkers\tBatch\tAvgTasks\tSamples\tAvgNs/task\tAvgTasks/s\tAvgSpeedup\tAvgEfficiency")
 	for _, row := range rows {
 		fmt.Fprintf(
 			writer,
-			"%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			"%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			row.name,
 			formatValue(row.workload),
+			formatInt(row.goProcs),
 			formatInt(row.workers),
 			formatBatchSize(row.batchSize),
 			formatInt(row.tasks),
+			formatInt(row.samples),
 			formatFloat(row.nsPerTask, "%.2f"),
 			formatRate(row.tasksPerSec),
 			formatFloat(row.speedup, "%.2fx"),
@@ -110,6 +140,87 @@ func printBenchmarkSummary() {
 		)
 	}
 	_ = writer.Flush()
+}
+
+func (a *summaryAggregate) average() summaryRow {
+	return summaryRow{
+		name:        a.name,
+		workload:    a.workload,
+		goProcs:     a.goProcs,
+		workers:     a.workers,
+		batchSize:   a.batchSize,
+		tasks:       int(math.Round(a.tasks.average())),
+		iterations:  int(math.Round(a.iterations.average())),
+		nsPerTask:   a.nsPerTask.average(),
+		tasksPerSec: a.tasksPerSec.average(),
+		speedup:     a.speedup.average(),
+		efficiency:  a.efficiency.average(),
+		samples:     a.samples,
+	}
+}
+
+func averageSummaryRows(records []summaryRow) []summaryRow {
+	maxIterations := make(map[string]int)
+	for _, row := range records {
+		key := summaryKey(row)
+		if row.iterations > maxIterations[key] {
+			maxIterations[key] = row.iterations
+		}
+	}
+
+	aggregates := make(map[string]*summaryAggregate)
+	for _, row := range records {
+		maxIteration := maxIterations[summaryKey(row)]
+		if maxIteration > 1 && row.iterations < maxIteration/2 {
+			continue
+		}
+
+		key := summaryKey(row)
+		aggregate := aggregates[key]
+		if aggregate == nil {
+			aggregate = &summaryAggregate{
+				name:      row.name,
+				workload:  row.workload,
+				goProcs:   row.goProcs,
+				workers:   row.workers,
+				batchSize: row.batchSize,
+			}
+			aggregates[key] = aggregate
+		}
+
+		aggregate.samples++
+		aggregate.tasks.add(float64(row.tasks))
+		aggregate.iterations.add(float64(row.iterations))
+		aggregate.nsPerTask.add(row.nsPerTask)
+		aggregate.tasksPerSec.add(row.tasksPerSec)
+		aggregate.speedup.add(row.speedup)
+		aggregate.efficiency.add(row.efficiency)
+	}
+
+	rows := make([]summaryRow, 0, len(aggregates))
+	for _, aggregate := range aggregates {
+		rows = append(rows, aggregate.average())
+	}
+	return rows
+}
+
+func summaryKey(row summaryRow) string {
+	return fmt.Sprintf("%s/%d", row.name, row.goProcs)
+}
+
+func (a *metricAggregate) add(value float64) {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return
+	}
+	a.sum += value
+	a.count++
+}
+
+func (a metricAggregate) average() float64 {
+	if a.count == 0 {
+		return math.NaN()
+	}
+	return a.sum / float64(a.count)
 }
 
 func nsPerTask(elapsed time.Duration, tasks int) float64 {
