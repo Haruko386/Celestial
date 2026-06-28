@@ -65,13 +65,19 @@ After benchmarks finish, the CLI prints a `Celestial benchmark summary` table wi
 
 - benchmark name
 - workload
+- Go runtime `GOMAXPROCS` value
 - worker count
 - batch size
-- task count
-- ns/task
-- tasks/s
-- speedup
-- efficiency
+- average task count
+- sample count
+- average ns/task
+- average tasks/s
+- average speedup
+- average efficiency
+
+Rows are grouped by benchmark name and `GOMAXPROCS`, so `-count 5` reports one averaged summary row with `Samples` set to `5`.
+
+`GoProcs` and `Workers` are intentionally different for dispatcher benchmarks. Go's benchmark suffix, such as `-16`, means `GOMAXPROCS=16`; the benchmark dispatcher uses `GOMAXPROCS - 1` workers when possible, leaving one CPU for coordination and runtime overhead.
 
 ## Evaluation
 
@@ -82,7 +88,7 @@ speedup = sequential ns/op / dispatcher ns/op
 efficiency = speedup / workers
 ```
 
-`BenchmarkEvaluationScore` reports these values directly.
+`BenchmarkEvaluationScore` reports these values directly, and the final summary table reports their averages across repeated runs.
 
 Suggested interpretation:
 
@@ -93,4 +99,4 @@ Suggested interpretation:
 
 ## Notes
 
-Benchmark results depend on CPU model, power settings, background load, and Go version. Use `-count 5` or higher and compare medians, not a single run.
+Benchmark results depend on CPU model, power settings, background load, and Go version. Use `-count 5` or higher and compare the final summary averages or the raw run-to-run spread.
